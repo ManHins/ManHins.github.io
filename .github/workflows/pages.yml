@@ -1,0 +1,83 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore source archive for first deployment
+        if: ${{ hashFiles('manhins-portfolio-source.zip') != '' }}
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path, PurePosixPath
+          import zipfile
+          with zipfile.ZipFile('manhins-portfolio-source.zip') as archive:
+              for entry in archive.infolist():
+                  parts = PurePosixPath(entry.filename).parts
+                  if len(parts) < 2 or parts[0] != 'manhins-portfolio' or parts[1] in ('.git', '.github') or '..' in parts:
+                      continue
+                  path = Path(*parts[1:])
+                  if entry.is_dir():
+                      path.mkdir(parents=True, exist_ok=True)
+                  else:
+                      path.parent.mkdir(parents=True, exist_ok=True)
+                      path.write_bytes(archive.read(entry))
+          PYCODE
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git rm manhins-portfolio-source.zip
+          git commit -m 'Add ManHins Nuxt portfolio source'
+          git push
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Generate static website
+        run: pnpm generate
+        env:
+          NUXT_APP_BASE_URL: ${{ steps.pages.outputs.base_path }}/
+      - name: Verify static output
+        run: node scripts/check-static.mjs
+      - name: Upload website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .output/public
+          include-hidden-files: true
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
